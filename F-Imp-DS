@@ -12,11 +12,11 @@ class MetricsCallback:
         self.train_losses = []
         self.val_losses = []
 
-    def on_epoch_end(self, mlp, X_train, y_train, X_val, y_val):
-        train_loss = mlp.loss_
+    def on_epoch_end(self, best_mlp, X_train, y_train, X_val, y_val):
+        train_loss = best_mlp.loss_
         self.train_losses.append(train_loss)
 
-        val_loss = log_loss(y_val, mlp.predict_proba(X_val))
+        val_loss = log_loss(y_val, best_mlp.predict_proba(X_val))
         self.val_losses.append(val_loss)
 
 def plot_precision_recall_curve(y_test, y_score, classes):
