@@ -1,0 +1,165 @@
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+from sklearn.neural_network import MLPClassifier
+from sklearn.metrics import classification_report, confusion_matrix, precision_recall_curve, roc_curve, auc, average_precision_score, log_loss
+import numpy as np
+import sqlite3
+import pickle
+import matplotlib.pyplot as plt
+
+class MetricsCallback:
+    def __init__(self):
+        self.train_losses = []
+        self.val_losses = []
+
+    def on_epoch_end(self, mlp, X_train, y_train, X_val, y_val):
+        train_loss = mlp.loss_
+        self.train_losses.append(train_loss)
+
+        val_loss = log_loss(y_val, mlp.predict_proba(X_val))
+        self.val_losses.append(val_loss)
+
+def plot_precision_recall_curve(y_test, y_score, classes):
+    precision = dict()
+    recall = dict()
+    average_precision = dict()
+    for i, class_name in enumerate(classes):
+        precision[class_name], recall[class_name], _ = precision_recall_curve(y_test == class_name, y_score[:, i])
+        average_precision[class_name] = average_precision_score(y_test == class_name, y_score[:, i])
+
+    plt.figure()
+    for class_name in classes:
+        plt.plot(recall[class_name], precision[class_name], lw=2,
+                 label=f'Precision-Recall curve of class {class_name} (area = {average_precision[class_name]:0.2f})')
+
+    plt.xlabel('Recall')
+    plt.ylabel('Precision')
+    plt.title('Extension of Precision-Recall curve to multi-class')
+    plt.legend(loc="best")
+    plt.show()
+
+def plot_roc_curve(y_test, y_score, classes):
+    fpr = dict()
+    tpr = dict()
+    roc_auc = dict()
+    for i, class_name in enumerate(classes):
+        fpr[class_name], tpr[class_name], _ = roc_curve(y_test == class_name, y_score[:, i])
+        roc_auc[class_name] = auc(fpr[class_name], tpr[class_name])
+
+    plt.figure()
+    for class_name in classes:
+        plt.plot(fpr[class_name], tpr[class_name], lw=2,
+                 label=f'ROC curve of class {class_name} (area = {roc_auc[class_name]:0.2f})')
+
+    plt.plot([0, 1], [0, 1], 'k--', lw=2)
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('Extension of ROC curve to multi-class')
+    plt.legend(loc="best")
+    plt.show()
+
+def main():
+    con = sqlite3.connect('database.db')
+    cur = con.cursor()
+
+    cur.execute("""SELECT Vmag_1, Vang_1, Vmag_2, Vang_2, Vmag_3, Vang_3, Imag_1, Iang_1, Imag_2, Iang_2, Imag_3, Iang_3 FROM datab_db""")
+
+    X = cur.fetchall()
+
+    cur.execute("""SELECT fault_resistance FROM datab_db""")
+    y = c.fetchall()
+    y = np.ravel(y)
+
+    # Convertir las etiquetas de las clases a enteros
+    classes = sorted(set(y))
+    class_to_index = {cls: idx for idx, cls in enumerate(classes)}
+    y = np.array([class_to_index[cls] for cls in y])
+
+    X = StandardScaler().fit_transform(X)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y)
+
+    n_iter_no_change = 15
+    mlp = MLPClassifier(max_iter=500, activation='relu', solver='adam', random_state=42)
+    
+# Definir parámetros para RandomizedSearchCV
+    param_distribution = {
+    'hidden_layer_sizes': [(10, 100, 10), (100, 10, 100), (100, 100, 100)],
+    'learning_rate_init': [0.001, 0.01, 0.1]
+}
+
+# Configurar RandomizedSearchCV
+Modelo = RandomizedSearchCV(
+    estimator= mlp,
+    param_distributions=param_distribution,
+    n_iter=9,
+    cv=5,
+    verbose=2, n_jobs=-1)
+
+
+# Realizar la búsqueda de hiperparámetros
+Modelo.fit(X_train, y_train)
+
+# Mejor modelo encontrado
+best_mlp = Modelo.best_estimator_
+
+# Guardar el mejor modelo
+pickle.dump(best_mlp, open('mlp_model.pkl', 'wb'))
+
+	
+
+    metrics_callback = MetricsCallback()
+
+    max_epochs = 1000
+    for epoch in range(max_epochs):
+        best_mlp.fit(X_train, y_train)
+        metrics_callback.on_epoch_end(best_mlp, X_train, y_train, X_test, y_test)
+        if best_mlp._no_improvement_count > n_iter_no_change:
+            break
+
+    filename = 'fault_r_noPV.sav'
+    pickle.dump(best_mlp, open(filename, 'wb'))
+
+    predictions = best_mlp.predict(X_test)
+    y_score = best_mlp.predict_proba(X_test)
+    conf_matrix = confusion_matrix(y_test, predictions)
+
+    plt.imshow(conf_matrix, cmap='Blues', interpolation='nearest')
+    plt.title('Matriz de confusión')
+    plt.colorbar()
+
+    tick_marks = np.arange(len(classes))
+    plt.xticks(tick_marks, classes)
+    plt.yticks(tick_marks, classes)
+
+    thresh = conf_matrix.max() / 2.
+    for i in range(conf_matrix.shape[0]):
+        for j in range(conf_matrix.shape[1]):
+            plt.text(j, i, format(conf_matrix[i, j], 'd'),
+                     horizontalalignment="center",
+                     color="white" if conf_matrix[i, j] > thresh else "black")
+
+    plt.ylabel('Etiqueta verdadera')
+    plt.xlabel('Predicción')
+    plt.tight_layout()
+    plt.show()
+
+    print(confusion_matrix(y_test, predictions))
+    print(classification_report(y_test, predictions))
+
+    plot_precision_recall_curve(y_test, y_score, classes)
+    plot_roc_curve(y_test, y_score, classes)
+
+    plt.figure()
+    plt.plot(metrics_callback.train_losses, label='Pérdida de Entrenamiento')
+    plt.plot(metrics_callback.val_losses, label='Pérdida de Validación')
+    plt.xlabel('Época')
+    plt.ylabel('Pérdida')
+    plt.title('Pérdida de Entrenamiento y Validación por Época')
+    plt.legend(loc="best")
+    plt.show()
+
+if __name__ == "__main__":
+    
+    main()
