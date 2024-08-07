@@ -1,0 +1,147 @@
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split, RandomizedSearchCV
+from sklearn.neural_network import MLPClassifier
+from sklearn.metrics import classification_report, confusion_matrix, precision_recall_curve, roc_curve, auc, average_precision_score
+import numpy as np
+import pandas as pd
+import sqlite3
+import pickle
+import matplotlib.pyplot as plt
+
+# Conexión a la base de datos
+con = sqlite3.connect('database.db')
+cur = con.cursor()
+
+# Cargar datos
+cur.execute("""SELECT Vmag_1, Vang_1, Vmag_2, Vang_2, Vmag_3, Vang_3, Imag_1, Iang_1, Imag_2, Iang_2, Imag_3, Iang_3 
+               FROM datab_db WHERE fault_type != 'LLLG'""")
+X = cur.fetchall()
+X = np.array(X)
+
+cur.execute("""SELECT fault_type FROM datab_db WHERE fault_type != 'LLLG'""")
+y = cur.fetchall()
+y = np.ravel(y)
+
+# Cerrar la conexión
+cur.close()
+con.close()
+
+# Mostrar algunas filas para verificar la carga
+#print(f"Dimensión de X: {X}")
+#print(f"Dimensión de y: {y}")
+
+# Normalización de datos
+scaler = StandardScaler()
+X = scaler.fit_transform(X)
+
+# Separación de datos de entrenamiento y prueba
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+
+#print(f"Dimensión de X_train: {X_train}")
+#print(f"Dimensión de X_test: {X_test}")
+#print(f"Dimensión de y_train: {y_train}")
+#print(f"Dimensión de X_test: {y_test}")
+
+# Definir el modelo Tipo Falla
+mlp = MLPClassifier(max_iter=500, activation='relu', solver='adam', random_state=42)
+
+# Definir parámetros para RandomizedSearchCV
+param_distribution = {
+    'hidden_layer_sizes': [(10,10), (50,50), (100,100), (100, 50), (50, 50), (100, 100)],
+    'learning_rate_init': [0.001, 0.01, 0.1]
+}
+
+# Configurar RandomizedSearchCV
+Modelo = RandomizedSearchCV(
+    estimator= mlp,
+    param_distributions=param_distribution,
+    n_iter=9,
+    cv=5,
+    verbose=2, n_jobs= multiprocessing.cpu_count() - 1)
+
+
+# Realizar la búsqueda de hiperparámetros
+Modelo.fit(X_train, y_train)
+
+# Mejor modelo encontrado
+best_mlp = Modelo.best_estimator_
+
+# Guardar el mejor modelo
+pickle.dump(best_mlp, open('mlp_model.pkl', 'wb'))
+
+# Realizar predicciones
+predictions = best_mlp.predict(X_test)
+y_score = best_mlp.predict_proba(X_test)
+
+# Matriz de confusión
+conf_matrix = confusion_matrix(y_test, predictions)
+classes = ['LG', 'LL', 'LLG', 'LLL']
+
+# Mostrar la matriz de confusión
+plt.figure(figsize=(8, 6))
+plt.imshow(conf_matrix, cmap='Blues', interpolation='nearest')
+plt.title('Matriz de confusión')
+plt.colorbar()
+tick_marks = np.arange(len(classes))
+plt.xticks(tick_marks, classes)
+plt.yticks(tick_marks, classes)
+thresh = conf_matrix.max() / 2.
+for i in range(conf_matrix.shape[0]):
+    for j in range(conf_matrix.shape[1]):
+        plt.text(j, i, format(conf_matrix[i, j], 'd'),
+                 horizontalalignment="center",
+                 color="white" if conf_matrix[i, j] > thresh else "black")
+plt.ylabel('Etiqueta verdadera')
+plt.xlabel('Predicción')
+plt.tight_layout()
+plt.show()
+
+# Mostrar el informe de clasificación
+print(classification_report(y_test, predictions))
+
+# Funciones para graficar curvas
+def plot_precision_recall_curve(y_test, y_score, classes):
+    precision = dict()
+    recall = dict()
+    average_precision = dict()
+    for i, class_name in enumerate(classes):
+        precision[class_name], recall[class_name], _ = precision_recall_curve(y_test == class_name, y_score[:, i])
+        average_precision[class_name] = average_precision_score(y_test == class_name, y_score[:, i])
+
+    plt.figure()
+    for class_name in classes:
+        plt.plot(recall[class_name], precision[class_name], lw=2,
+                 label=f'Precision-Recall curve of class {class_name} (area = {average_precision[class_name]:0.2f})')
+
+    plt.xlabel('Recall')
+    plt.ylabel('Precision')
+    plt.title('Extension of Precision-Recall curve to multi-class')
+    plt.legend(loc="best")
+    plt.show()
+
+
+def plot_roc_curve(y_test, y_score, classes):
+    fpr = dict()
+    tpr = dict()
+    roc_auc = dict()
+    for i, class_name in enumerate(classes):
+        fpr[class_name], tpr[class_name], _ = roc_curve(y_test == class_name, y_score[:, i])
+        roc_auc[class_name] = auc(fpr[class_name], tpr[class_name])
+
+    plt.figure()
+    for class_name in classes:
+        plt.plot(fpr[class_name], tpr[class_name], lw=2,
+                 label=f'ROC curve of class {class_name} (area = {roc_auc[class_name]:0.2f})')
+
+    plt.plot([0, 1], [0, 1], 'k--', lw=2)
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('Extension of ROC curve to multi-class')
+    plt.legend(loc="best")
+    plt.show()
+
+# Mostrar curvas de precisión-recall y ROC
+plot_precision_recall_curve(y_test, y_score, classes)
+plot_roc_curve(y_test, y_score, classes)
